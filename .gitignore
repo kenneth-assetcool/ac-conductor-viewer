@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+
+# macOS
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/
+
+# Data files - do not commit large captures
+*.mkv
+*.mp4
+*.avi
+*.mov
+*.tif
+*.tiff
+*.csv
+*.zarr/
+*.ome.zarr/
+
+# Build outputs
+build/
+dist/
+*.spec
