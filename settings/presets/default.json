@@ -1,0 +1,29 @@
+{
+    "version": 4,
+    "mode": "White Coating Overlay",
+    "white_brightness": 120,
+    "max_saturation": 50,
+    "dark_min": 20,
+    "dark_max": 120,
+    "background": 20,
+    "view_width": 1200,
+    "auto_pan_speed_m_per_min": 1.0,
+    "csv_bin_width": 500,
+    "coated_overlay_color": {
+        "r": 0,
+        "g": 255,
+        "b": 0
+    },
+    "uncoated_overlay_color": {
+        "r": 255,
+        "g": 0,
+        "b": 0
+    },
+    "position_calibration": {
+        "conductor": "ACSR Drake",
+        "diameter_mm": 28.13,
+        "strip_height_px": 437,
+        "unit": "m",
+        "show_overlay": true
+    }
+}
