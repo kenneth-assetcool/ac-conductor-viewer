@@ -2695,8 +2695,6 @@ class AssetCoolCoatingInspector(QMainWindow):
 
             current_x += dx_px
             frame_count += 1
-            if frame_count > 2000:
-                break
 
             # 2. Print progress to terminal (using \r so it updates on the same line)
             percent = min(100, int((frame_count / total_frames) * 100))
