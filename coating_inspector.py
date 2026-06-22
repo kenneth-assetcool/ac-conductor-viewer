@@ -942,13 +942,18 @@ class AssetCoolCoatingInspector(QMainWindow):
         colour_row.addWidget(self.coated_color_button)
         colour_row.addWidget(self.uncoated_color_button)
 
+        self.video_export_button = QPushButton("Export Synced Videos")
+        self.video_export_button.clicked.connect(self.export_synchronized_videos)
+        self.video_export_button.setMinimumWidth(170)
+
         output_layout.addLayout(csv_row)
         output_layout.addLayout(colour_row)
         output_layout.addWidget(self.export_profile_button)
+        output_layout.addWidget(self.video_export_button)
 
         output_group.setLayout(output_layout)
         output_group.setMinimumWidth(320)
-        output_group.setMaximumHeight(80)
+        output_group.setMaximumHeight(110)
         parameter_grid.addWidget(output_group, 0, 5)
         parameter_group.setLayout(parameter_grid)
 
@@ -2544,10 +2549,182 @@ class AssetCoolCoatingInspector(QMainWindow):
         except Exception as exc:
             self.status_label.setText(f"Failed to export coverage CSV: {exc}")
 
+    def export_synchronized_videos(self):
+        """
+        Export two synchronized frame-by-frame MP4 videos for the full length
+        of the loaded acquisition asset:
+          - A "clean" video tracking the processed filter mode.
+          - A "masked" video with the user-selected overlay colours tracking masks.
+        """
+        if self.display_image is None:
+            self.status_label.setText("No active asset image loaded to export video.")
+            return
+
+        calibration = self.get_calibration()
+        mm_per_original_pixel = calibration["mm_per_pixel"]
+
+        if mm_per_original_pixel <= 0:
+            self.status_label.setText(
+                "Export aborted: Calibration scale factor is invalid."
+            )
+            return
+
+        fps = 30
+        mm_per_second = (self.auto_pan_speed_m_per_min * 1000.0) / 60.0
+        mm_per_frame = mm_per_second / fps
+        dx_px = float(
+            (mm_per_frame / mm_per_original_pixel) / max(1, self.preview_scale_x)
+        )
+
+        # CRITICAL FIX: Explicitly extract and force standard Python int types
+        img_h, img_w = self.display_image.shape[:2]
+        h = int(img_h)
+        w = int(img_w)
+        view_w = int(min(self.visible_width_spin.value(), w))
+
+        base_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Synchronized Performance Videos", "", "AVI Video (*.avi)"
+        )
+        if not base_path:
+            return
+
+        from pathlib import Path
+
+        pure_path = Path(base_path)
+        base_no_ext = pure_path.with_suffix("")
+
+        path_clean = str(base_no_ext) + "_clean.avi"
+        path_masked = str(base_no_ext) + "_masked.avi"
+
+        self.status_label.setText(
+            "Baking synced inspection streams... GUI may lock up temporarily."
+        )
+        QApplication.processEvents()
+
+        # CRITICAL FIX: Ensure width and height arguments are clean primitive Python ints
+        fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+        writer_clean = cv2.VideoWriter(path_clean, fourcc, fps, (view_w, h))
+        writer_masked = cv2.VideoWriter(path_masked, fourcc, fps, (view_w, h))
+
+        selected_filter = self.filter_box.currentText()
+        white_brightness = self.brightness_slider.value()
+        saturation_max = self.saturation_slider.value()
+        background_threshold = self.background_slider.value()
+        dark_min = self.dark_min_slider.value()
+        dark_max = self.dark_max_slider.value()
+
+        if selected_filter in [
+            "White Coating Mask",
+            "White Coating Overlay",
+            "White Uncoated Overlay",
+            "White Coated + Uncoated Overlay",
+        ]:
+            mask = ConductorImageProcessor.detect_white_coating(
+                self.raw_image, white_brightness, saturation_max, background_threshold
+            )
+            c_color, uc_color = self.coated_overlay_color, self.uncoated_overlay_color
+        elif selected_filter in [
+            "White Missing Coverage Mask",
+            "White Missing Coverage Overlay",
+        ]:
+            mask = ConductorImageProcessor.detect_dark_gray_coating(
+                self.raw_image, dark_min, dark_max, saturation_max, background_threshold
+            )
+            c_color, uc_color = self.uncoated_overlay_color, self.uncoated_overlay_color
+        elif selected_filter in [
+            "Dark Gray Coating Mask",
+            "Dark Gray Coating Overlay",
+            "Dark Gray Uncoated Overlay",
+            "Dark Gray Coated + Uncoated Overlay",
+        ]:
+            mask = ConductorImageProcessor.detect_dark_gray_coating(
+                self.raw_image, dark_min, dark_max, saturation_max, background_threshold
+            )
+            c_color, uc_color = self.coated_overlay_color, self.uncoated_overlay_color
+        else:
+            mask = ConductorImageProcessor.detect_bright_scratches(
+                self.raw_image, white_brightness
+            )
+            c_color, uc_color = self.coated_overlay_color, self.uncoated_overlay_color
+
+        clean_view_uint8 = ConductorImageProcessor.normalize_to_uint8(
+            self.display_image
+        )
+        # if clean_view_uint8.ndim == 2:
+        #     full_clean_view = cv2.cvtColor(clean_view_uint8, cv2.COLOR_GRAY2BGR)
+        # else:
+        #     full_clean_view = cv2.cvtColor(
+        #         clean_view_uint8[:, :, :3], cv2.COLOR_RGB2BGR
+        #     )
+        base_gray = ConductorImageProcessor.to_gray_uint8(self.raw_image)
+        full_clean_view = cv2.cvtColor(base_gray, cv2.COLOR_GRAY2BGR)
+
+        overlay_rgb = ConductorImageProcessor.coating_overlay(
+            self.raw_image,
+            mask,
+            overlay_color=(0, 255, 0),  # Strictly pure green
+            alpha=0.35,
+        )
+        full_masked_view = cv2.cvtColor(overlay_rgb, cv2.COLOR_RGB2BGR)
+
+        # CRITICAL FIX: Forcing initialization to float to allow precise mathematical steps
+        current_x = float(self.find_first_non_black_x())
+
+        # SAFETY GUARD: If the first non-black X combined with view_w overflows the bounds,
+        # fallback to 0.0 to ensure the loop runs at least a single frame pass.
+        if current_x + view_w > w:
+            current_x = 0.0
+
+        # 1. Calculate approximate total frames beforehand so we can map the progress percentage
+        total_frames = max(1, int(math.ceil((w - view_w - current_x) / dx_px))) + 1
+
+        print(f"\n--- Starting Video Export ---")
+        print(f"Target Video Resolution: {view_w}x{h} @ {fps}fps")
+        print(f"Processing approximately {total_frames} frames...")
+
+        frame_count = 0
+        while current_x + view_w <= w:
+            x_start = int(current_x)
+            x_end = int(current_x + view_w)
+
+            frame_clean = full_clean_view[:, x_start:x_end]
+            frame_masked = full_masked_view[:, x_start:x_end]
+
+            writer_clean.write(frame_clean)
+            writer_masked.write(frame_masked)
+
+            current_x += dx_px
+            frame_count += 1
+            if frame_count > 2000:
+                break
+
+            # 2. Print progress to terminal (using \r so it updates on the same line)
+            percent = min(100, int((frame_count / total_frames) * 100))
+            sys.stdout.write(
+                f"\rExport Progress: [{percent}%] rendered {frame_count}/{total_frames} frames"
+            )
+            sys.stdout.flush()
+
+        writer_clean.release()
+        writer_masked.release()
+
+        # 3. Clean wrap-up in the terminal
+        print(f"\nExport complete. Files released.\n-----------------------------\n")
+
+        if frame_count == 0:
+            self.status_label.setText(
+                "Export failed: Layout limits prevented frames from rendering."
+            )
+        else:
+            self.status_label.setText(
+                f"Export Success! Wrote {frame_count} frames.\n1. {path_clean}\n2. {path_masked}"
+            )
+
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def main():
     app = QApplication(sys.argv)
